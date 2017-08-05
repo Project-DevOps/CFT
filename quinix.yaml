@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Challenge to make an httpd application running with VPC,ELB,RDS setup.
+
+Parameters:
+  VPCCIDR:
+    Type: String
+    Description: IP Address range for the VPC
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 172.30.0.0/16
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  VPCName:
+    Type: String
+    Description: VPC Name Tag
+    Default: VPC for httpd
+  PublicSubnetCIDRA:
+    Type: String
+    Description: IP Address range for the Public Subnet A
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 172.30.0.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PublicSubnetNameA:
+    Type: String
+    Description: Subnet Name Tag
+    Default: Public Subnet A
+  PrivateSubnetCIDRA:
+    Type: String
+    Description: IP Address range for the Private Subnet A
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 172.30.2.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PrivateSubnetNameA:
+    Type: String
+    Description: Subnet Name Tag
+    Default: Private Mgmt A
+  PrivateSubnetCIDRB:
+    Type: String
+    Description: IP Address range for the Private Subnet B
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 172.30.3.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PrivateSubnetNameB:
+    Type: String
+    Description: Subnet Name Tag
+    Default: Private Mgmt B
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: 'VPC for HTTPD:'
+      Parameters:
+      - VPCName
+      - VPCCIDR
+    - Label:
+        default: 'Public Subnet:'
+      Parameters:
+      - PublicSubnetNameA
+      - PublicSubnetCIDRA
+    - Label:
+        default: 'Private Subnets'
+      Parameters:
+      - PrivateSubnetNameA
+      - PrivateSubnetCIDRA
+      - PrivateSubnetNameB
+      - PrivateSubnetCIDRB
+    ParameterLabels:
+      VPCCIDR:
+        default: 'VPC CIDR:'
+      VPCName:
+        default: 'Name:'
+      PublicSubnetNameA:
+        default: 'Public Subnet Name:'
+      PrivateSubnetNameA:
+        default: 'Private Subnet Name:'
+      PrivateSubnetNameB:
+        default: 'Private Subnet Name:'
+      PublicSubnetCIDRA:
+        default: 'Public Subnet CIDR:'
+      PrivateSubnetCIDRA:
+        default: 'Private Subnet CIDR:'
+      PrivateSubnetCIDRB:
+        default: 'Public Subnet CIDR:'
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      CidrBlock:
+        Ref: VPCCIDR
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Name
+        Value:
+          Ref: VPCName
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PublicSubnetCIDRA
+      AvailabilityZone:
+        Fn::Select:
+        - '0'
+        - Fn::GetAZs: ''
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Public Subnet
+      - Key: Name
+        Value:
+          Ref: PublicSubnetNameA
+      - Key: SubnetType
+        Value: Public
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Public
+
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+    - VPC
+    - InternetGateway
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Public
+      - Key: RouteTableType
+        Value: Public
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    DependsOn: PublicRouteTable 
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+    - PublicSubnetA
+    - PublicRouteTable
+    Properties:
+      SubnetId:
+        Ref: PublicSubnetA
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  ElasticIPForNAT:
+    Type: AWS::EC2::EIP
+    DependsOn:
+    - VPC
+    Properties:
+      Domain:
+        Ref: VPC
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn:
+    - ElasticIPForNAT
+    - PublicSubnetA
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - ElasticIPForNAT
+        - AllocationId
+      SubnetId:
+        Ref: PublicSubnetA
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - '0'
+        - Fn::GetAZs: ''
+      CidrBlock:
+        Ref: PrivateSubnetCIDRA
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Private Subnet A
+      - Key: Name
+        Value:
+          Ref: PrivateSubnetNameA
+      - Key: SubnetType
+        Value: Private
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Private Route Table A
+      - Key: RouteTableType
+        Value: Public
+
+  PrivateSubnetRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+    - PrivateSubnetA
+    - PrivateRouteTableA
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetA
+      RouteTableId:
+        Ref: PrivateRouteTableA
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    DependsOn:
+    - PrivateRouteTableA
+    - NATGateway
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGateway
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - '1'
+        - Fn::GetAZs: ''
+      CidrBlock:
+        Ref: PrivateSubnetCIDRB
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Private Subnet B
+      - Key: Name
+        Value:
+          Ref: PrivateSubnetNameB
+      - Key: SubnetType
+        Value: Private
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Private Route Table B
+      - Key: RouteTableType
+        Value: Public
+
+  PrivateSubnetRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+    - PrivateSubnetB
+    - PrivateRouteTableB
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetB
+      RouteTableId:
+        Ref: PrivateRouteTableB
+
+  PrivateRouteB:
+    Type: AWS::EC2::Route
+    DependsOn: NATGateway
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGateway
