@@ -7,7 +7,7 @@ Parameters:
     Description: IP Address range for the VPC
     MinLength: '9'
     MaxLength: '18'
-    Default: 172.30.0.0/16
+    Default: 10.30.0.0/16
     AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
   VPCName:
@@ -19,38 +19,98 @@ Parameters:
     Description: IP Address range for the Public Subnet A
     MinLength: '9'
     MaxLength: '18'
-    Default: 172.30.0.0/24
+    Default: 10.30.0.0/24
     AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
   PublicSubnetNameA:
     Type: String
     Description: Subnet Name Tag
     Default: Public Subnet A
+  PublicSubnetCIDRB:
+    Type: String
+    Description: IP Address range for the Public Subnet B
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.30.1.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PublicSubnetNameB:
+    Type: String
+    Description: Subnet Name Tag
+    Default: Public Subnet B
   PrivateSubnetCIDRA:
     Type: String
     Description: IP Address range for the Private Subnet A
     MinLength: '9'
     MaxLength: '18'
-    Default: 172.30.2.0/24
+    Default: 10.30.2.0/24
     AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
   PrivateSubnetNameA:
     Type: String
     Description: Subnet Name Tag
-    Default: Private Mgmt A
+    Default: Private Subnet A
   PrivateSubnetCIDRB:
     Type: String
     Description: IP Address range for the Private Subnet B
     MinLength: '9'
     MaxLength: '18'
-    Default: 172.30.3.0/24
+    Default: 10.30.3.0/24
     AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
   PrivateSubnetNameB:
     Type: String
     Description: Subnet Name Tag
-    Default: Private Mgmt B
-
+    Default: Private Subnet B
+  InstanceOS:
+    Type: String
+    Description: Enter the type of OS 
+    Default: AmazonLinux
+    AllowedValues:
+      - AmazonLinux
+      - Ubuntu
+      - CentOS
+    ConstraintDescription: Must specify to provision the EC2 instance.
+  AMIid:
+    Type: String
+    Description: Enter the AMI ID
+  OSInstanceType:
+    Type: String
+    Description: EC2 instance type
+    Default: t2.micro
+    AllowedValues: 
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m2.2xlarge
+      - m2.4xlarge
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+    ConstraintDescription: must be a valid EC2 instance type
+  KeyPair:
+    Description: Name of an existing EC2 key pair access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair
+    Default: test
+  InstanceNameTag:
+    Description: Name Tag
+    Type: String
+    Default: Auto-Scaling and ELB
+ 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -60,10 +120,12 @@ Metadata:
       - VPCName
       - VPCCIDR
     - Label:
-        default: 'Public Subnet:'
+        default: 'Public Subnets:'
       Parameters:
       - PublicSubnetNameA
       - PublicSubnetCIDRA
+      - PublicSubnetNameB
+      - PublicSubnetCIDRB
     - Label:
         default: 'Private Subnets'
       Parameters:
@@ -71,6 +133,14 @@ Metadata:
       - PrivateSubnetCIDRA
       - PrivateSubnetNameB
       - PrivateSubnetCIDRB
+    - Label:
+        default: 'Create Launch configuration'
+      Parameters:
+      - InstanceOS
+      - AMIid
+      - OSInstanceType
+      - KeyPair
+      - InstanceNameTag
     ParameterLabels:
       VPCCIDR:
         default: 'VPC CIDR:'
@@ -78,16 +148,24 @@ Metadata:
         default: 'Name:'
       PublicSubnetNameA:
         default: 'Public Subnet Name:'
+      PublicSubnetNameB:
+        default: 'Public Subnet Name:'
       PrivateSubnetNameA:
         default: 'Private Subnet Name:'
       PrivateSubnetNameB:
         default: 'Private Subnet Name:'
       PublicSubnetCIDRA:
         default: 'Public Subnet CIDR:'
+      PublicSubnetCIDRB:
+        default: 'Public Subnet CIDR:'
       PrivateSubnetCIDRA:
         default: 'Private Subnet CIDR:'
       PrivateSubnetCIDRB:
         default: 'Public Subnet CIDR:'
+
+Conditions: 
+  cAmazonLinux: !Or [ !Equals [ !Ref InstanceOS, AmazonLinux ], !Equals [ !Ref InstanceOS, CentOS ] ]
+  cUbuntu: !Equals [ !Ref InstanceOS, Ubuntu]
 
 Resources:
 
@@ -128,6 +206,31 @@ Resources:
       - Key: Name
         Value:
           Ref: PublicSubnetNameA
+      - Key: SubnetType
+        Value: Public
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PublicSubnetCIDRB
+      AvailabilityZone:
+        Fn::Select:
+        - '1'
+        - Fn::GetAZs: ''
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackName
+      - Key: Network
+        Value: Public Subnet
+      - Key: Name
+        Value:
+          Ref: PublicSubnetNameB
       - Key: SubnetType
         Value: Public
 
@@ -179,7 +282,7 @@ Resources:
       GatewayId:
         Ref: InternetGateway
 
-  PublicSubnetRouteTableAssociation:
+  PublicSubnetRouteTableAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
     DependsOn:
     - PublicSubnetA
@@ -190,7 +293,18 @@ Resources:
       RouteTableId:
         Ref: PublicRouteTable
 
-  ElasticIPForNAT:
+  PublicSubnetRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+    - PublicSubnetB
+    - PublicRouteTable
+    Properties:
+      SubnetId:
+        Ref: PublicSubnetB
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  ElasticIPForNATA:
     Type: AWS::EC2::EIP
     DependsOn:
     - VPC
@@ -198,18 +312,39 @@ Resources:
       Domain:
         Ref: VPC
 
-  NATGateway:
+  ElasticIPForNATB:
+    Type: AWS::EC2::EIP
+    DependsOn:
+    - VPC
+    Properties:
+      Domain:
+        Ref: VPC
+
+  NATGatewayA:
     Type: AWS::EC2::NatGateway
     DependsOn:
-    - ElasticIPForNAT
+    - ElasticIPForNATA
     - PublicSubnetA
     Properties:
       AllocationId:
         Fn::GetAtt:
-        - ElasticIPForNAT
+        - ElasticIPForNATA
         - AllocationId
       SubnetId:
         Ref: PublicSubnetA
+
+  NATGatewayB:
+    Type: AWS::EC2::NatGateway
+    DependsOn:
+    - ElasticIPForNATB
+    - PublicSubnetB
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - ElasticIPForNATB
+        - AllocationId
+      SubnetId:
+        Ref: PublicSubnetB
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
@@ -267,13 +402,13 @@ Resources:
     Type: AWS::EC2::Route
     DependsOn:
     - PrivateRouteTableA
-    - NATGateway
+    - NATGatewayA
     Properties:
       RouteTableId:
         Ref: PrivateRouteTableA
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId:
-        Ref: NATGateway
+        Ref: NATGatewayA
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -329,10 +464,199 @@ Resources:
 
   PrivateRouteB:
     Type: AWS::EC2::Route
-    DependsOn: NATGateway
+    DependsOn: NATGatewayB
     Properties:
       RouteTableId:
         Ref: PrivateRouteTableB
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId:
-        Ref: NATGateway
+        Ref: NATGatewayB
+
+  SecurityGroupCreate:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: Default sg for new VPC
+      VpcId: 
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 
+          Ref: VPCCIDR
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 
+          Ref: VPCCIDR
+
+  #Create launch configuration for your web server
+  lchttpd:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Condition: cAmazonLinux
+    DependsOn:
+    - VPC
+    - SecurityGroupCreate
+    Properties: 
+        ImageId: 
+          Ref: AMIid
+        InstanceType: 
+          Ref: OSInstanceType
+        KeyName: 
+          Ref: KeyPair
+        SecurityGroups:
+        - Ref: SecurityGroupCreate
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo su
+            yum install -y httpd
+            service httpd start
+            chkconfig httpd on
+            cd /var/www/html
+            cat > index.html  << EOF
+            IaC challenge completed: 
+            BHAGYALAKSHMI GUNASEKAR
+            EOF
+            service httpd restart
+
+  # Create launch configuration for your ubuntu server
+  lchttpd:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Condition: cUbuntu
+    DependsOn:
+    - VPC
+    - SecurityGroupCreate
+    Properties: 
+        ImageId: 
+          Ref: AMIid
+        InstanceType: 
+          Ref: OSInstanceType
+        KeyName: 
+          Ref: KeyPair
+        SecurityGroups:
+        - Ref: SecurityGroupCreate
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo apt-get update
+            sudo apt-get install apache2 -y
+            sudo systemctl start apache2
+            sudo update-rc.d apache2 defaults
+            cd /var/www/html
+            sudo mv index.html index.bak
+            cat > index.html  << EOF
+            IaC challenge completed:
+            BHAGYALAKSHMI GUNASEKAR
+            EOF
+            sudo systemctl restart apache2
+  
+  #Create a Classic elb for your web server
+
+  elbhttpd:
+     Type: AWS::ElasticLoadBalancing::LoadBalancer
+     DependsOn:
+     - VPC
+     - SecurityGroupCreate
+     Properties:
+      Subnets:
+      - Ref: PublicSubnetA
+      - Ref: PublicSubnetB
+      CrossZone: true
+      HealthCheck:
+        HealthyThreshold: 10
+        Interval: 30
+        Target: HTTP:80/index.html
+        Timeout: 5
+        UnhealthyThreshold: 2
+      Listeners:
+      - InstancePort: 80
+        LoadBalancerPort: 80
+        Protocol: HTTP
+        InstanceProtocol: HTTP
+      ConnectionDrainingPolicy:
+        Enabled: 'true'
+        Timeout: '30'
+      SecurityGroups:
+      - Ref: SecurityGroupCreate
+      Tags:
+        - Key: Name
+          Value: ELB-httpd
+
+  #Create auto-scaling group for your web server
+
+  asghttpd:
+     Type: AWS::AutoScaling::AutoScalingGroup
+     Properties:
+      VPCZoneIdentifier: 
+      - Ref: PrivateSubnetA 
+      - Ref: PrivateSubnetB
+      Cooldown: 300
+      DesiredCapacity: 2
+      HealthCheckGracePeriod: 300
+      HealthCheckType: EC2
+      MaxSize: 4
+      MinSize: 2
+      LaunchConfigurationName:
+        Ref: lchttpd
+      LoadBalancerNames:
+      - Ref: elbhttpd
+      Tags:
+        - Key: Name
+          Value: httpd
+          PropagateAtLaunch: true
+
+  #Create scaling action for you auto-scaling group
+  
+  scalingscaleup:
+      Type: "AWS::AutoScaling::ScalingPolicy"
+      Properties:
+        AdjustmentType: ChangeInCapacity
+        PolicyType: SimpleScaling
+        AutoScalingGroupName: 
+          Ref: asghttpd
+        Cooldown: 300
+        ScalingAdjustment: 1
+
+  scalingscaledown:
+      Type: "AWS::AutoScaling::ScalingPolicy"
+      Properties:
+        AdjustmentType: ChangeInCapacity
+        PolicyType: SimpleScaling
+        AutoScalingGroupName: 
+          Ref: asghttpd
+        Cooldown: 300
+        ScalingAdjustment: -1
+
+  httpdhighcpuutilalarm:
+      Type: "AWS::CloudWatch::Alarm"
+      Properties:
+        ActionsEnabled: true
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        EvaluationPeriods: 1
+        MetricName: CPUUtilization
+        Namespace: AWS/EC2
+        Period: 300
+        Statistic: Average
+        Threshold: 80.0
+        Dimensions:
+        - Name: AutoScalingGroupName
+          Value: 
+          - Ref: asghttpd
+
+  httpdlowcpuutilalarm:
+      Type: "AWS::CloudWatch::Alarm"
+      Properties:
+        ActionsEnabled: true
+        ComparisonOperator: LessThanThreshold
+        EvaluationPeriods: 1
+        MetricName: CPUUtilization
+        Namespace: AWS/EC2
+        Period: 300
+        Statistic: Average
+        Threshold: 20.0
+        Dimensions:
+        - Name: AutoScalingGroupName
+          Value: 
+          - Ref: asghttpd
