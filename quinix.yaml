@@ -62,14 +62,6 @@ Parameters:
     Type: String
     Description: Subnet Name Tag
     Default: Private Subnet B
-  InstanceOS:
-    Type: String
-    Description: Enter the type of OS 
-    Default: AmazonLinux
-  AMIid:
-    Type: String
-    Default: ami-6df1e514
-    Description: Enter the AMI ID
   OSInstanceType:
     Type: String
     Description: EC2 instance type
@@ -132,13 +124,20 @@ Parameters:
       - m3.medium
       - m3.large
     ConstraintDescription: must be a valid EC2 instance type
-  BastionHostAMI:
-    Type: String
-    Description: Enter the AMI ID for BastionHost
-    Default: ami-6df1e514
   S3BucketName:
     Type: String
     Description: Enter the S3 bucket name 
+
+Mappings: 
+  RegionMap: 
+    us-east-1: 
+      "os": "ami-a4c7edb2"
+    us-east-2:
+      "os": "ami-8a7859ef"
+    us-west-1: 
+      "os": "ami-327f5352"
+    us-west-2:
+      "os": "ami-6df1e514"
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -166,7 +165,6 @@ Metadata:
         default: 'Create Launch configuration for webservers'
       Parameters:
       - InstanceOS
-      - AMIid
       - OSInstanceType
       - KeyPair
       - InstanceNameTag
@@ -178,7 +176,6 @@ Metadata:
         default: 'Create BastionHost with Auto-Scaling'
       Parameters:
       - BastionHostInstanceType
-      - BastionHostAMI
     - Label:
         default: 'Create Postgres RDS instance'
       Parameters:
@@ -372,6 +369,10 @@ Resources:
     Type: AWS::EC2::EIP
     DependsOn:
     - VPC
+    - ElasticIPForNATA
+    - ElasticIPForNATB
+    - NATGatewayA
+    - NATGatewayB
     Properties:
       Domain:
         Ref: VPC
@@ -668,8 +669,7 @@ Resources:
     - NATGatewayB
     - InstanceProfile
     Properties: 
-        ImageId: 
-          Ref: AMIid
+        ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", os]
         InstanceType: 
           Ref: OSInstanceType
         KeyName: 
@@ -754,64 +754,66 @@ Resources:
 
   #Create scaling action for you auto-scaling group
   scalingscaleup:
-      Type: "AWS::AutoScaling::ScalingPolicy"
-      Properties:
-        AdjustmentType: ChangeInCapacity
-        PolicyType: SimpleScaling
-        AutoScalingGroupName: 
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn:
+    - asghttpd
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: asghttpd
+      Cooldown: 300
+      ScalingAdjustment: '1'
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - asghttpd
+    - scalingscaleup
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: 80.0
+      AlarmDescription: Alarm if CPU too high or metric disappears indicating instance is down
+      Period: 300
+      AlarmActions:
+      - Ref: scalingscaleup
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value:
           Ref: asghttpd
-        Cooldown: 300
-        ScalingAdjustment: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      MetricName: CPUUtilization
 
   scalingscaledown:
-      Type: "AWS::AutoScaling::ScalingPolicy"
-      Properties:
-        AdjustmentType: ChangeInCapacity
-        PolicyType: SimpleScaling
-        AutoScalingGroupName: 
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn:
+    - asghttpd
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: asghttpd
+      Cooldown: 300
+      ScalingAdjustment: -1
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - asghttpd
+    - scalingscaledown
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: 20.0
+      AlarmDescription: Alarm if CPU too low or metric disappears indicating instance is down
+      Period: 300
+      AlarmActions:
+      - Ref: scalingscaledown
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value:
           Ref: asghttpd
-        Cooldown: 300
-        ScalingAdjustment: -1
-  
-  #Alarms for Auto-scaling group
-  httpdhighcpuutilalarm:
-      Type: "AWS::CloudWatch::Alarm"
-      DependsOn:
-      - asghttpd
-      - scalingscaleup
-      Properties:
-        ActionsEnabled: true
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        EvaluationPeriods: 1
-        MetricName: CPUUtilization
-        Namespace: AWS/EC2
-        Period: 300
-        Statistic: Average
-        Threshold: 80.0
-        Dimensions:
-        - Name: AutoScalingGroupName
-          Value: 
-           Ref: asghttpd
-
-  #Alarms for Auto-scaling group
-  httpdlowcpuutilalarm:
-      Type: "AWS::CloudWatch::Alarm"
-      DependsOn:
-      - asghttpd
-      - scalingscaledown
-      Properties:
-        ActionsEnabled: true
-        ComparisonOperator: LessThanThreshold
-        EvaluationPeriods: 1
-        MetricName: CPUUtilization
-        Namespace: AWS/EC2
-        Period: 300
-        Statistic: Average
-        Threshold: 20.0
-        Dimensions:
-        - Name: AutoScalingGroupName
-          Value: 
-            Ref: asghttpd
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
   
   #DB subnet group for Postgresql instance
   postgresubnetgroup:
@@ -852,8 +854,7 @@ Resources:
     - GatewayToInternet
     Properties: 
         AssociatePublicIpAddress: true
-        ImageId: 
-          Ref: AMIid
+        ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", os]
         InstanceType: 
           Ref: OSInstanceType
         KeyName: 
@@ -890,3 +891,16 @@ Resources:
         - Key: Name
           Value: bastionhost
           PropagateAtLaunch: true
+
+Outputs:
+  BastionHostEIP:
+    Description: The EIP for accessing BastionHost
+    Value: 
+      Ref: ElasticIPForBastion
+    Export:
+      Name: BastionHostEIP
+  ELBDNSName:
+    Description: The LoadBalancer DNS name for accessing webservers
+    Value: !GetAtt myELB.DNSName
+    Export:
+      Name: ELBDNSName
