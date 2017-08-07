@@ -135,6 +135,7 @@ Parameters:
   BastionHostAMI:
     Type: String
     Description: Enter the AMI ID for BastionHost
+    Default: ami-6df1e514
   S3BucketName:
     Type: String
     Description: Enter the S3 bucket name 
@@ -527,6 +528,7 @@ Resources:
       NatGatewayId:
         Ref: NATGatewayB
 
+  #Secruity Group for Web Servers
   SecurityGroupCreate:
     Type: AWS::EC2::SecurityGroup
     DependsOn: VPC
@@ -549,8 +551,9 @@ Resources:
         FromPort: '22'
         ToPort: '22'
         CidrIp: 
-          !Join [ '', [!Ref ElasticIPForBastion, /32 ] ] 
+          Ref: PublicSubnetCIDRA
   
+  #Security Group for BastionHost
   SecurityGroupBastion:
     Type: AWS::EC2::SecurityGroup
     DependsOn: VPC
@@ -563,7 +566,8 @@ Resources:
         FromPort: '22'
         ToPort: '22'
         CidrIp: 0.0.0.0/0
-
+  
+  #Security Group for ELB
   SecurityGroupELB:
     Type: AWS::EC2::SecurityGroup
     DependsOn: VPC
@@ -576,7 +580,8 @@ Resources:
         FromPort: '80'
         ToPort: '80'
         CidrIp: 0.0.0.0/0
-   
+  
+  #SecruityGroup for RDS
   SecurityGroupRDS:
     Type: AWS::EC2::SecurityGroup
     DependsOn: VPC
@@ -597,18 +602,19 @@ Resources:
           Ref: PrivateSubnetCIDRB
   
   #Create s3 bucket
-
   S3BucketHttpd:
     Type: "AWS::S3::Bucket"
     Properties:
       AccessControl: PublicRead
       BucketName:
         Ref: S3BucketName
-
+  
+  #Bucket Policy to set GetObject and PutObject for the webservers
   ReadOnlyBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
     DependsOn: 
     - S3BucketHttpd
+    - EC2role
     Properties:
       Bucket:
         Ref: S3BucketHttpd
@@ -622,8 +628,35 @@ Resources:
           Resource: 
           - !Join [ '', ['arn:aws:s3:::', !Ref 'S3BucketHttpd' , /* ]]
           Principal:
-            AWS: !Join ["", [ "arn:aws:iam::", !Ref "AWS::AccountId" ]]
+            AWS: !Join ["", [ "arn:aws:iam::", !Ref "AWS::AccountId", ":role/", !Ref EC2role] ]
+  
+  #EC2 role creation to restrict access to the Bucket
+  EC2role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+                Service:
+                  - ec2.amazonaws.com
+                  - s3.amazonaws.com
 
+            Action:
+                      - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+        - arn:aws:iam::aws:policy/AutoScalingFullAccess
+  
+  #InstanceProfile to attach the EC2 role to instances in LaunchConfiguration
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: EC2role
+    Properties:
+      Roles:
+         - Ref: EC2role
 
   #Create launch configuration for your Amazon Linux web server
   lchttpd:
@@ -631,6 +664,9 @@ Resources:
     DependsOn:
     - VPC
     - SecurityGroupCreate
+    - NATGatewayA
+    - NATGatewayB
+    - InstanceProfile
     Properties: 
         ImageId: 
           Ref: AMIid
@@ -640,6 +676,8 @@ Resources:
           Ref: KeyPair
         SecurityGroups:
         - Ref: SecurityGroupCreate
+        IamInstanceProfile: 
+          Ref: InstanceProfile
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
@@ -693,7 +731,6 @@ Resources:
           Value: ELB-httpd
 
   #Create auto-scaling group for your web server
-
   asghttpd:
      Type: AWS::AutoScaling::AutoScalingGroup
      Properties:
@@ -716,7 +753,6 @@ Resources:
           PropagateAtLaunch: true
 
   #Create scaling action for you auto-scaling group
-  
   scalingscaleup:
       Type: "AWS::AutoScaling::ScalingPolicy"
       Properties:
@@ -736,9 +772,13 @@ Resources:
           Ref: asghttpd
         Cooldown: 300
         ScalingAdjustment: -1
-
+  
+  #Alarms for Auto-scaling group
   httpdhighcpuutilalarm:
       Type: "AWS::CloudWatch::Alarm"
+      DependsOn:
+      - asghttpd
+      - scalingscaleup
       Properties:
         ActionsEnabled: true
         ComparisonOperator: GreaterThanOrEqualToThreshold
@@ -753,8 +793,12 @@ Resources:
           Value: 
            Ref: asghttpd
 
+  #Alarms for Auto-scaling group
   httpdlowcpuutilalarm:
       Type: "AWS::CloudWatch::Alarm"
+      DependsOn:
+      - asghttpd
+      - scalingscaledown
       Properties:
         ActionsEnabled: true
         ComparisonOperator: LessThanThreshold
@@ -770,17 +814,15 @@ Resources:
             Ref: asghttpd
   
   #DB subnet group for Postgresql instance
-
   postgresubnetgroup:
     Type: "AWS::RDS::DBSubnetGroup"
-    Properties: 
+    Properties:
       DBSubnetGroupDescription: Subnet group for Postgresql
       SubnetIds:
       - Ref: PrivateSubnetA
       - Ref: PrivateSubnetB
 
   #RDS with Postgresql instance
-
   postgrerds:
     Type: "AWS::RDS::DBInstance"
     DependsOn:
@@ -789,7 +831,7 @@ Resources:
     Properties:
       AllocatedStorage: 30
       DBInstanceClass: db.t2.micro
-      DBSubnetGroupName: 
+      DBSubnetGroupName:
         Ref: postgresubnetgroup
       DBName: Postgresql
       Engine: postgres
@@ -801,19 +843,23 @@ Resources:
       VPCSecurityGroups:
       - Ref: SecurityGroupRDS
 
-  # Creating Bastion Host 
+  # Creating LaunchConfiguration for Bastion Host 
   lcBastion:
     Type: AWS::AutoScaling::LaunchConfiguration
     DependsOn:
     - VPC
     - SecurityGroupBastion
+    - GatewayToInternet
     Properties: 
+        AssociatePublicIpAddress: true
         ImageId: 
           Ref: AMIid
         InstanceType: 
           Ref: OSInstanceType
         KeyName: 
           Ref: KeyPair
+        IamInstanceProfile: 
+          Ref: InstanceProfile
         SecurityGroups:
         - Ref: SecurityGroupBastion
         UserData:
@@ -826,7 +872,7 @@ Resources:
             sudo pip install aws-ec2-assign-elastic-ip
             sudo /usr/local/bin/aws-ec2-assign-elastic-ip
   
-  #BastionHost for webserver
+  #Auto-scaling group for BastionHost to access webservers
   asgbastionhost:
      Type: AWS::AutoScaling::AutoScalingGroup
      Properties:
