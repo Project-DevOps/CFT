@@ -66,13 +66,9 @@ Parameters:
     Type: String
     Description: Enter the type of OS 
     Default: AmazonLinux
-    AllowedValues:
-      - AmazonLinux
-      - Ubuntu
-      - CentOS
-    ConstraintDescription: Must specify to provision the EC2 instance.
   AMIid:
     Type: String
+    Default: ami-6df1e514
     Description: Enter the AMI ID
   OSInstanceType:
     Type: String
@@ -102,7 +98,7 @@ Parameters:
       - m4.10xlarge
     ConstraintDescription: must be a valid EC2 instance type
   KeyPair:
-    Description: Name of an existing EC2 key pair access to the instances
+    Description: Name of an existing EC2 key pair access to the instances(BastionHost and webservers)
     Type: AWS::EC2::KeyPair::KeyName
     ConstraintDescription: Must be the name of an existing EC2 KeyPair
     Default: test
@@ -110,7 +106,39 @@ Parameters:
     Description: Name Tag
     Type: String
     Default: Auto-Scaling and ELB
- 
+  Username:
+    Description: Enter the Username for Postgres instance
+    Type: String
+    Default: postgres
+  Password:
+    Description: Enter the password for Postgres instance
+    Type: String
+    Default: postgres
+  BastionHostInstanceType:
+    Description: Choose InstanceType for BastionHost
+    Type: String
+    Default: t2.micro
+    AllowedValues: 
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m3.medium
+      - m3.large
+    ConstraintDescription: must be a valid EC2 instance type
+  BastionHostAMI:
+    Type: String
+    Description: Enter the AMI ID for BastionHost
+  S3BucketName:
+    Type: String
+    Description: Enter the S3 bucket name 
+
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -134,13 +162,27 @@ Metadata:
       - PrivateSubnetNameB
       - PrivateSubnetCIDRB
     - Label:
-        default: 'Create Launch configuration'
+        default: 'Create Launch configuration for webservers'
       Parameters:
       - InstanceOS
       - AMIid
       - OSInstanceType
       - KeyPair
       - InstanceNameTag
+    - Label:
+        default: 'Enter s3 Bucket for Web Servers'
+      Parameters:
+      - S3BucketName
+    - Label:
+        default: 'Create BastionHost with Auto-Scaling'
+      Parameters:
+      - BastionHostInstanceType
+      - BastionHostAMI
+    - Label:
+        default: 'Create Postgres RDS instance'
+      Parameters:
+      - Username
+      - Password
     ParameterLabels:
       VPCCIDR:
         default: 'VPC CIDR:'
@@ -162,10 +204,14 @@ Metadata:
         default: 'Private Subnet CIDR:'
       PrivateSubnetCIDRB:
         default: 'Public Subnet CIDR:'
-
-Conditions: 
-  cAmazonLinux: !Or [ !Equals [ !Ref InstanceOS, AmazonLinux ], !Equals [ !Ref InstanceOS, CentOS ] ]
-  cUbuntu: !Equals [ !Ref InstanceOS, Ubuntu]
+      Username:
+        default: 'Username for Postgres'
+      Password:
+        default: 'Password for Postgres'
+      BastionHostInstanceType:
+        default: 'Instance Type for BastionHost'
+      S3BucketName:
+        default: 'S3 Bucket for Web Servers'
 
 Resources:
 
@@ -273,8 +319,9 @@ Resources:
 
   PublicRoute:
     Type: AWS::EC2::Route
-    DependsOn: GatewayToInternet
-    DependsOn: PublicRouteTable 
+    DependsOn: 
+    - GatewayToInternet
+    - PublicRouteTable 
     Properties:
       RouteTableId:
         Ref: PublicRouteTable
@@ -313,6 +360,14 @@ Resources:
         Ref: VPC
 
   ElasticIPForNATB:
+    Type: AWS::EC2::EIP
+    DependsOn:
+    - VPC
+    Properties:
+      Domain:
+        Ref: VPC
+
+  ElasticIPForBastion:
     Type: AWS::EC2::EIP
     DependsOn:
     - VPC
@@ -484,17 +539,95 @@ Resources:
         FromPort: '80'
         ToPort: '80'
         CidrIp: 
-          Ref: VPCCIDR
+          Ref: PublicSubnetCIDRA
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 
+          Ref: PublicSubnetCIDRB
       - IpProtocol: tcp
         FromPort: '22'
         ToPort: '22'
         CidrIp: 
-          Ref: VPCCIDR
+          !Join [ '', [!Ref ElasticIPForBastion, /32 ] ] 
+  
+  SecurityGroupBastion:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: Default sg for new VPC
+      VpcId: 
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
 
-  #Create launch configuration for your web server
+  SecurityGroupELB:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: Default sg for new VPC
+      VpcId: 
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+   
+  SecurityGroupRDS:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: Default sg for new VPC
+      VpcId: 
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: 
+          Ref: PrivateSubnetCIDRA
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: 
+          Ref: PrivateSubnetCIDRB
+  
+  #Create s3 bucket
+
+  S3BucketHttpd:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: PublicRead
+      BucketName:
+        Ref: S3BucketName
+
+  ReadOnlyBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    DependsOn: 
+    - S3BucketHttpd
+    Properties:
+      Bucket:
+        Ref: S3BucketHttpd
+      PolicyDocument: 
+        Statement: 
+        - 
+          Action: 
+            - "s3:GetObject"
+            - "s3:PutObject"
+          Effect: "Allow"
+          Resource: 
+          - !Join [ '', ['arn:aws:s3:::', !Ref 'S3BucketHttpd' , /* ]]
+          Principal:
+            AWS: !Join ["", [ "arn:aws:iam::", !Ref "AWS::AccountId" ]]
+
+
+  #Create launch configuration for your Amazon Linux web server
   lchttpd:
     Type: AWS::AutoScaling::LaunchConfiguration
-    Condition: cAmazonLinux
     DependsOn:
     - VPC
     - SecurityGroupCreate
@@ -511,6 +644,7 @@ Resources:
           Fn::Base64: !Sub |
             #!/bin/bash
             sudo su
+            yum update -y
             yum install -y httpd
             service httpd start
             chkconfig httpd on
@@ -520,45 +654,19 @@ Resources:
             BHAGYALAKSHMI GUNASEKAR
             EOF
             service httpd restart
-
-  # Create launch configuration for your ubuntu server
-  lchttpd:
-    Type: AWS::AutoScaling::LaunchConfiguration
-    Condition: cUbuntu
-    DependsOn:
-    - VPC
-    - SecurityGroupCreate
-    Properties: 
-        ImageId: 
-          Ref: AMIid
-        InstanceType: 
-          Ref: OSInstanceType
-        KeyName: 
-          Ref: KeyPair
-        SecurityGroups:
-        - Ref: SecurityGroupCreate
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            sudo apt-get update
-            sudo apt-get install apache2 -y
-            sudo systemctl start apache2
-            sudo update-rc.d apache2 defaults
-            cd /var/www/html
-            sudo mv index.html index.bak
-            cat > index.html  << EOF
-            IaC challenge completed:
-            BHAGYALAKSHMI GUNASEKAR
-            EOF
-            sudo systemctl restart apache2
+            yum install -y https://download.postgresql.org/pub/repos/yum/9.6/redhat/rhel-6-x86_64/pgdg-ami201503-96-9.6-2.noarch.rpm
+            yum install -y postgresql96
+            yum install -y postgresql96-server
+            service postgresql-9.6 initdb
+            chkconfig postgresql-9.6 on
+            service postgresql-9.6 start
   
   #Create a Classic elb for your web server
-
   elbhttpd:
      Type: AWS::ElasticLoadBalancing::LoadBalancer
      DependsOn:
      - VPC
-     - SecurityGroupCreate
+     - SecurityGroupELB
      Properties:
       Subnets:
       - Ref: PublicSubnetA
@@ -579,7 +687,7 @@ Resources:
         Enabled: 'true'
         Timeout: '30'
       SecurityGroups:
-      - Ref: SecurityGroupCreate
+      - Ref: SecurityGroupELB
       Tags:
         - Key: Name
           Value: ELB-httpd
@@ -643,7 +751,7 @@ Resources:
         Dimensions:
         - Name: AutoScalingGroupName
           Value: 
-          - Ref: asghttpd
+           Ref: asghttpd
 
   httpdlowcpuutilalarm:
       Type: "AWS::CloudWatch::Alarm"
@@ -659,4 +767,80 @@ Resources:
         Dimensions:
         - Name: AutoScalingGroupName
           Value: 
-          - Ref: asghttpd
+            Ref: asghttpd
+  
+  #DB subnet group for Postgresql instance
+
+  postgresubnetgroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties: 
+      DBSubnetGroupDescription: Subnet group for Postgresql
+      SubnetIds:
+      - Ref: PrivateSubnetA
+      - Ref: PrivateSubnetB
+
+  #RDS with Postgresql instance
+
+  postgrerds:
+    Type: "AWS::RDS::DBInstance"
+    DependsOn:
+    - PrivateSubnetA
+    - postgresubnetgroup
+    Properties:
+      AllocatedStorage: 30
+      DBInstanceClass: db.t2.micro
+      DBSubnetGroupName: 
+        Ref: postgresubnetgroup
+      DBName: Postgresql
+      Engine: postgres
+      Port: 5432
+      MasterUsername:
+       Ref: Username
+      MasterUserPassword:
+       Ref: Password
+      VPCSecurityGroups:
+      - Ref: SecurityGroupRDS
+
+  # Creating Bastion Host 
+  lcBastion:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn:
+    - VPC
+    - SecurityGroupBastion
+    Properties: 
+        ImageId: 
+          Ref: AMIid
+        InstanceType: 
+          Ref: OSInstanceType
+        KeyName: 
+          Ref: KeyPair
+        SecurityGroups:
+        - Ref: SecurityGroupBastion
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo yum update -y
+            sudo yum install -y wget
+            sudo wget https://bootstrap.pypa.io/get-pip.py 
+            sudo python get-pip.py --user
+            sudo pip install aws-ec2-assign-elastic-ip
+            sudo /usr/local/bin/aws-ec2-assign-elastic-ip
+  
+  #BastionHost for webserver
+  asgbastionhost:
+     Type: AWS::AutoScaling::AutoScalingGroup
+     Properties:
+      VPCZoneIdentifier: 
+      - Ref: PublicSubnetA
+      Cooldown: 300
+      DesiredCapacity: 1
+      HealthCheckGracePeriod: 300
+      HealthCheckType: EC2
+      MaxSize: 1
+      MinSize: 1
+      LaunchConfigurationName:
+        Ref: lcBastion
+      Tags:
+        - Key: Name
+          Value: bastionhost
+          PropagateAtLaunch: true
